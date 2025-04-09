@@ -1,14 +1,41 @@
-# 使用 OpenJDK 17 作为基础镜像
-FROM eclipse-temurin:17-jdk-jammy
+# ===== 第一阶段：构建阶段 =====
+# 使用官方 Maven 镜像（推荐 JDK 17 以兼容 Spring Boot 3.x）
+FROM maven:3.8.6-eclipse-temurin-17 as build
 
 # 设置工作目录
 WORKDIR /app
 
-# 复制构建好的 JAR 文件（假设打包后是 target/wechat-ai-demo-0.0.1.jar）
-COPY target/wechat-ai-demo-0.0.1.jar app.jar
+# 1. 复制构建文件（利用分层缓存优化）
+COPY pom.xml settings.xml ./
+# 2. 先下载依赖（单独一层，避免源码变动重复下载）
+RUN mvn -s settings.xml dependency:go-offline
 
-# 暴露端口（微信回调通常用 80/443）
+# 3. 复制源码并构建
+COPY src ./src
+RUN mvn -s settings.xml clean package -DskipTests
+
+# ===== 第二阶段：运行阶段 =====
+# 使用轻量级 JRE 镜像（基于 Eclipse Temurin）
+FROM eclipse-temurin:17-jre-jammy
+
+# 时区设置（上海时区）
+RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone
+
+# 安装 CA 证书（HTTPS 必需）
+RUN apt-get update && \
+    apt-get install -y ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# 设置工作目录
+WORKDIR /app
+
+# 从构建阶段复制 JAR 包
+COPY --from=build /app/target/*.jar ./app.jar
+
+# 暴露端口（微信云托管要求 80）
 EXPOSE 80
 
-# 启动 Spring Boot 应用
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# 启动命令（使用 ENTRYPOINT + CMD 最佳实践）
+ENTRYPOINT ["java", "-jar"]
+CMD ["/app/app.jar"]
